@@ -57,6 +57,9 @@
 #define UNIWILL_BRIGHTNESS_DEFAULT		UNIWILL_BRIGHTNESS_MAX * 0.30
 #define UNIWILL_COLOR_DEFAULT			0xffffff
 
+static void uw_charging_priority_write_state(void);
+static void uw_charging_profile_write_state(void);
+
 struct tuxedo_keyboard_driver uniwill_keyboard_driver;
 
 struct kbd_led_state_uw_t {
@@ -68,6 +71,8 @@ struct kbd_led_state_uw_t {
 };
 
 struct uniwill_device_features_t uniwill_device_features;
+
+static bool uw_feats_loaded = false;
 
 static u8 uniwill_kbd_bl_enable_state_on_start;
 static bool uniwill_kbd_bl_type_rgb_single_color = true;
@@ -380,11 +385,18 @@ void uniwill_event_callb(u32 code)
 			kbd_led_state_uw.brightness = 0xc8;
 			uniwill_write_kbd_bl_state();
 			break;
-		// Also refresh keyboard state on cable switch event
+		// Refresh keyboard state on cable switch event
 		case UNIWILL_OSD_DC_ADAPTER_CHANGE:
 			uniwill_write_kbd_bl_state();
 			break;
 		}
+	}
+
+	switch (code) {
+	case UNIWILL_OSD_DC_ADAPTER_CHANGE:
+		msleep(50);
+		uw_charging_priority_write_state();
+		break;
 	}
 }
 
@@ -766,6 +778,35 @@ static int uw_lightbar_remove(struct platform_device *dev)
 }
 
 static bool uw_charging_prio_loaded = false;
+static bool uw_charging_prio_last_written_value;
+
+static ssize_t uw_charging_prios_available_show(struct device *child,
+						struct device_attribute *attr,
+						char *buffer);
+static ssize_t uw_charging_prio_show(struct device *child,
+				     struct device_attribute *attr, char *buffer);
+static ssize_t uw_charging_prio_store(struct device *child,
+				      struct device_attribute *attr,
+				      const char *buffer, size_t size);
+
+struct uw_charging_prio_attrs_t {
+	struct device_attribute charging_prios_available;
+	struct device_attribute charging_prio;
+} uw_charging_prio_attrs = {
+	.charging_prios_available = __ATTR(charging_prios_available, 0444, uw_charging_prios_available_show, NULL),
+	.charging_prio = __ATTR(charging_prio, 0644, uw_charging_prio_show, uw_charging_prio_store)
+};
+
+static struct attribute *uw_charging_prio_attrs_list[] = {
+	&uw_charging_prio_attrs.charging_prios_available.attr,
+	&uw_charging_prio_attrs.charging_prio.attr,
+	NULL
+};
+
+static struct attribute_group uw_charging_prio_attr_group = {
+	.name = "charging_priority",
+	.attrs = uw_charging_prio_attrs_list
+};
 
 /*
  * charging_prio values
@@ -785,6 +826,8 @@ static int uw_set_charging_priority(u8 charging_priority)
 
 	next_data = (previous_data & ~(1 << 7)) | charging_priority;
 	result = uniwill_write_ec_ram(0x07cc, next_data);
+	if (result == 0)
+		uw_charging_prio_last_written_value = charging_priority;
 
 	return result;
 }
@@ -808,20 +851,74 @@ static int uw_has_charging_priority(bool *status)
 		|| dmi_match(DMI_PRODUCT_NAME, "A60 MUV")
 	;
 
-	if (not_supported_device)
-		return false;
+	if (not_supported_device) {
+		*status = false;
+		return 0;
+	}
 
 	result = uniwill_read_ec_ram(0x0742, &data);
+	if (result != 0)
+		return -EIO;
 
 	if (data & (1 << 5))
 		*status = true;
 	else
 		*status = false;
 
-	return result;
+	return 0;
+}
+
+static void uw_charging_priority_write_state(void)
+{
+	if (uw_charging_prio_loaded)
+		uw_set_charging_priority(uw_charging_prio_last_written_value);
+}
+
+static void uw_charging_priority_init(struct platform_device *dev)
+{
+	u8 value;
+	struct uniwill_device_features_t *uw_feats = &uniwill_device_features;
+
+	if (uw_feats->uniwill_has_charging_prio)
+		uw_charging_prio_loaded = sysfs_create_group(&dev->dev.kobj, &uw_charging_prio_attr_group) == 0;
+
+	// Read for state init
+	if (uw_charging_prio_loaded) {
+		uw_get_charging_priority(&value);
+		uw_charging_prio_last_written_value = value;
+	}
 }
 
 static bool uw_charging_profile_loaded = false;
+static bool uw_charging_profile_last_written_value;
+
+static ssize_t uw_charging_profiles_available_show(struct device *child,
+						   struct device_attribute *attr,
+						   char *buffer);
+static ssize_t uw_charging_profile_show(struct device *child,
+					struct device_attribute *attr, char *buffer);
+static ssize_t uw_charging_profile_store(struct device *child,
+					 struct device_attribute *attr,
+					 const char *buffer, size_t size);
+
+struct uw_charging_profile_attrs_t {
+	struct device_attribute charging_profiles_available;
+	struct device_attribute charging_profile;
+} uw_charging_profile_attrs = {
+	.charging_profiles_available = __ATTR(charging_profiles_available, 0444, uw_charging_profiles_available_show, NULL),
+	.charging_profile = __ATTR(charging_profile, 0644, uw_charging_profile_show, uw_charging_profile_store)
+};
+
+static struct attribute *uw_charging_profile_attrs_list[] = {
+	&uw_charging_profile_attrs.charging_profiles_available.attr,
+	&uw_charging_profile_attrs.charging_profile.attr,
+	NULL
+};
+
+static struct attribute_group uw_charging_profile_attr_group = {
+	.name = "charging_profile",
+	.attrs = uw_charging_profile_attrs_list
+};
 
 /*
  * charging_profile values
@@ -843,13 +940,17 @@ static int uw_set_charging_profile(u8 charging_profile)
 	next_data = (previous_data & ~(0x03 << 4)) | charging_profile;
 	result = uniwill_write_ec_ram(0x07a6, next_data);
 
+	if (result == 0)
+		uw_charging_profile_last_written_value = charging_profile;
+
 	return result;
 }
 
 static int uw_get_charging_profile(u8 *charging_profile)
 {
 	int result = uniwill_read_ec_ram(0x07a6, charging_profile);
-	*charging_profile = (*charging_profile >> 4) & 0x03;
+	if (result == 0)
+		*charging_profile = (*charging_profile >> 4) & 0x03;
 	return result;
 }
 
@@ -865,17 +966,42 @@ static int uw_has_charging_profile(bool *status)
 		|| dmi_match(DMI_PRODUCT_NAME, "A60 MUV")
 	;
 
-	if (not_supported_device)
-		return false;
+	if (not_supported_device) {
+		*status = false;
+		return 0;
+	}
 
 	result = uniwill_read_ec_ram(0x078e, &data);
+	if (result != 0)
+		return -EIO;
 
 	if (data & (1 << 3))
 		*status = true;
 	else
 		*status = false;
 
-	return result;
+	return 0;
+}
+
+static void uw_charging_profile_write_state(void)
+{
+	if (uw_charging_profile_loaded)
+		uw_set_charging_profile(uw_charging_profile_last_written_value);
+}
+
+static void uw_charging_profile_init(struct platform_device *dev)
+{
+	u8 value;
+	struct uniwill_device_features_t *uw_feats = &uniwill_device_features;
+
+	if (uw_feats->uniwill_has_charging_profile)
+		uw_charging_profile_loaded = sysfs_create_group(&dev->dev.kobj, &uw_charging_profile_attr_group) == 0;
+
+	// Read for state init
+	if (uw_charging_profile_loaded) {
+		uw_get_charging_profile(&value);
+		uw_charging_profile_last_written_value = value;
+	}
 }
 
 struct char_to_u8_t {
@@ -960,25 +1086,6 @@ static ssize_t uw_charging_profile_store(struct device *child,
 		return -EINVAL;
 }
 
-struct uw_charging_profile_attrs_t {
-	struct device_attribute charging_profiles_available;
-	struct device_attribute charging_profile;
-} uw_charging_profile_attrs = {
-	.charging_profiles_available = __ATTR(charging_profiles_available, 0444, uw_charging_profiles_available_show, NULL),
-	.charging_profile = __ATTR(charging_profile, 0644, uw_charging_profile_show, uw_charging_profile_store)
-};
-
-static struct attribute *uw_charging_profile_attrs_list[] = {
-	&uw_charging_profile_attrs.charging_profiles_available.attr,
-	&uw_charging_profile_attrs.charging_profile.attr,
-	NULL
-};
-
-static struct attribute_group uw_charging_profile_attr_group = {
-	.name = "charging_profile",
-	.attrs = uw_charging_profile_attrs_list
-};
-
 static struct char_to_u8_t charging_prio_options[] = {
 	{ .descriptor = "charge_battery", .value = 0x00 },
 	{ .descriptor = "performance",    .value = 0x01 }
@@ -1055,33 +1162,22 @@ static ssize_t uw_charging_prio_store(struct device *child,
 		return -EINVAL;
 }
 
-struct uw_charging_prio_attrs_t {
-	struct device_attribute charging_prios_available;
-	struct device_attribute charging_prio;
-} uw_charging_prio_attrs = {
-	.charging_prios_available = __ATTR(charging_prios_available, 0444, uw_charging_prios_available_show, NULL),
-	.charging_prio = __ATTR(charging_prio, 0644, uw_charging_prio_show, uw_charging_prio_store)
-};
-
-static struct attribute *uw_charging_prio_attrs_list[] = {
-	&uw_charging_prio_attrs.charging_prios_available.attr,
-	&uw_charging_prio_attrs.charging_prio.attr,
-	NULL
-};
-
-static struct attribute_group uw_charging_prio_attr_group = {
-	.name = "charging_priority",
-	.attrs = uw_charging_prio_attrs_list
-};
-
 struct uniwill_device_features_t *uniwill_get_device_features(void)
 {
 	struct uniwill_device_features_t *uw_feats = &uniwill_device_features;
 	u32 status;
+	bool feats_loaded;
+
+	if (uw_feats_loaded)
+		return uw_feats;
+
+	feats_loaded = true;
 
 	status = uniwill_read_ec_ram(0x0740, &uw_feats->model);
-	if (status != 0)
+	if (status != 0) {
 		uw_feats->model = 0;
+		feats_loaded = false;
+	}
 
 	uw_feats->uniwill_profile_v1_two_profs = false
 		|| dmi_match(DMI_BOARD_NAME, "PF5PU1G")
@@ -1124,8 +1220,17 @@ struct uniwill_device_features_t *uniwill_get_device_features(void)
 		uw_feats->uniwill_profile_v1_two_profs ||
 		uw_feats->uniwill_profile_v1_three_profs;
 
-	uw_has_charging_priority(&uw_feats->uniwill_has_charging_prio);
-	uw_has_charging_profile(&uw_feats->uniwill_has_charging_profile);
+	if (uw_has_charging_priority(&uw_feats->uniwill_has_charging_prio) != 0)
+		feats_loaded = false;
+	if (uw_has_charging_profile(&uw_feats->uniwill_has_charging_profile) != 0)
+		feats_loaded = false;
+
+	if (feats_loaded)
+		pr_debug("feats loaded\n");
+	else
+		pr_debug("feats not yet loaded\n");
+
+	uw_feats_loaded = feats_loaded;
 
 	return uw_feats;
 }
@@ -1172,11 +1277,8 @@ static int uniwill_keyboard_probe(struct platform_device *dev)
 	status = uw_lightbar_init(dev);
 	uw_lightbar_loaded = (status >= 0);
 
-	if (uw_feats->uniwill_has_charging_prio)
-		uw_charging_prio_loaded = sysfs_create_group(&dev->dev.kobj, &uw_charging_prio_attr_group) == 0;
-
-	if (uw_feats->uniwill_has_charging_profile)
-		uw_charging_profile_loaded = sysfs_create_group(&dev->dev.kobj, &uw_charging_profile_attr_group) == 0;
+	uw_charging_priority_init(dev);
+	uw_charging_profile_init(dev);
 
 	return 0;
 }
