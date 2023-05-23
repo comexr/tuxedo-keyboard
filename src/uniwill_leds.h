@@ -72,7 +72,7 @@ static int uniwill_write_kbd_bl_white(u8 brightness)
 	// value for some reason.
 	// Sidenote: IBP Gen6/7 has immediate brightness value on 0x1802 and not on 0x1808, but does
 	// not need this workaround.
-	if (!data) {
+	if (!data && brightness) {
 		uniwill_write_ec_ram(UW_EC_REG_KBD_BL_RGB_BLUE_BRIGHTNESS, 0x01);
 	}
 
@@ -179,6 +179,7 @@ int uniwill_leds_init_early(struct platform_device *dev)
 		pr_err("Reading barebone ID failed.\n");
 		return ret;
 	}
+	pr_debug("EC Barebone ID: %#04x\n", data);
 
 	if (data == UW_EC_REG_BAREBONE_ID_VALUE_PFxxxxx ||
 	    data == UW_EC_REG_BAREBONE_ID_VALUE_PFxMxxx ||
@@ -187,7 +188,8 @@ int uniwill_leds_init_early(struct platform_device *dev)
 	    data == UW_EC_REG_BAREBONE_ID_VALUE_PH4TQx1 ||
 	    data == UW_EC_REG_BAREBONE_ID_VALUE_PH6TRX1 ||
 	    data == UW_EC_REG_BAREBONE_ID_VALUE_PH6TQxx ||
-	    data == UW_EC_REG_BAREBONE_ID_VALUE_PH4Axxx) {
+	    data == UW_EC_REG_BAREBONE_ID_VALUE_PH4Axxx ||
+	    data == UW_EC_REG_BAREBONE_ID_VALUE_PH4Pxxx) {
 		ret = uniwill_read_ec_ram(UW_EC_REG_KBD_BL_STATUS, &data);
 		if (ret) {
 			pr_err("Reading keyboard backlight status failed.\n");
