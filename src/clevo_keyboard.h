@@ -317,6 +317,7 @@ static void clevo_keyboard_init(void)
 		|| dmi_string_in(DMI_BOARD_NAME, "PCX0DX")
 		|| dmi_string_in(DMI_BOARD_NAME, "PCx0Dx_GN20")
 		|| dmi_string_in(DMI_BOARD_NAME, "L14xMU")
+		|| dmi_string_in(DMI_BOARD_NAME, "NS5x_NS7xAU")
 		;
 	if (performance_profile_set_workaround) {
 		TUXEDO_INFO("Performance profile 'performance' set workaround applied\n");
